@@ -36,7 +36,7 @@ import { getDailyLeaderboard } from "../../utils/daily-leaderboards";
 import AutoRoleList from "../../constants/auto-roles";
 import * as UserDAL from "../../dal/user";
 import { buildMonkeyMail } from "../../utils/monkey-mail";
-import { updateStreak } from "../../dal/user";
+import { getWeeklySeason } from "../../services/weekly-seasons";
 
 try {
   if (anticheatImplemented() === false) throw new Error("undefined");
@@ -95,6 +95,7 @@ interface AddResultData {
   tagPbs: any[];
   insertedId: ObjectId;
   dailyLeaderboardRank?: number;
+  weeklySeasonRank?: number;
   xp: number;
   dailyXpBonus: boolean;
   xpBreakdown: Record<string, number>;
@@ -349,10 +350,9 @@ export async function addResult(
     !user.banned &&
     (process.env.MODE === "dev" || (user.timeTyping ?? 0) > 7200);
 
-  if (dailyLeaderboard && validResultCriteria) {
-    //get the selected badge id
-    const badgeId = user.inventory?.badges?.find((b) => b.selected)?.id;
+  const selectedBadgeId = user.inventory?.badges?.find((b) => b.selected)?.id;
 
+  if (dailyLeaderboard && validResultCriteria) {
     incrementDailyLeaderboard(result.mode, result.mode2, result.language);
     dailyLeaderboardRank = await dailyLeaderboard.addResult(
       {
@@ -365,13 +365,13 @@ export async function addResult(
         uid,
         discordAvatar: user.discordAvatar,
         discordId: user.discordId,
-        badgeId,
+        badgeId: selectedBadgeId,
       },
       dailyLeaderboardsConfig
     );
   }
 
-  const streak = await updateStreak(uid, result.timestamp);
+  const streak = await UserDAL.updateStreak(uid, result.timestamp);
 
   const xpGained = await calculateXp(
     result,
@@ -380,6 +380,27 @@ export async function addResult(
     user.xp ?? 0,
     streak
   );
+
+  const weeklySeasonConfig = req.ctx.configuration.seasons.weekly;
+  let weeklySeasonRank = -1;
+  const eligibleForSeason =
+    !user.banned &&
+    (process.env.MODE === "dev" || (user.timeTyping ?? 0) > 7200);
+
+  const weeklySeason = getWeeklySeason(weeklySeasonConfig);
+  if (eligibleForSeason && xpGained.xp > 0 && weeklySeason) {
+    weeklySeasonRank = await weeklySeason.addResult(
+      {
+        uid,
+        name: user.name,
+        discordAvatar: user.discordAvatar,
+        discordId: user.discordId,
+        badgeId: selectedBadgeId,
+      },
+      xpGained.xp,
+      weeklySeasonConfig
+    );
+  }
 
   if (result.bailedOut === false) delete result.bailedOut;
   if (result.blindMode === false) delete result.blindMode;
@@ -422,6 +443,11 @@ export async function addResult(
   if (dailyLeaderboardRank !== -1) {
     data.dailyLeaderboardRank = dailyLeaderboardRank;
   }
+
+  if (weeklySeasonRank !== -1) {
+    data.weeklySeasonRank = weeklySeasonRank;
+  }
+
   incrementResult(result);
 
   return new MonkeyResponse("Result saved", data);
